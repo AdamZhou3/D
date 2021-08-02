@@ -1,11 +1,15 @@
-from urllib.parse import urlparse
-from requests import get
+
 import os
+import tqdm
 import zipfile
 
 import pandas as pd
 import numpy as np
+from shapely import wkt
+import geopandas as gpd
 
+from urllib.parse import urlparse
+from requests import get
 ## Constanst =============================================
 VERSION = "v3.0"  # output version
 
@@ -181,6 +185,58 @@ def date_features(df, date="date"):
 #     df[date+"_int"] = pd.to_datetime(df[date]).astype(int)
     df[date+"_weekend"] = np.where(df[date].dt.dayofweek < 5,0,1)
     return df
+
+def get_sequences_by_distancegreedy(gdf_tz, gdf_poi):
+    sequences={}
+    for tz_ind in tqdm.tqdm(range(len(gdf_tz))):
+        tz = gdf_tz.iloc[tz_ind,:].geometry
+        tz_pois = gdf_poi[gdf_poi.within(tz)].reset_index()
+
+        if tz_pois.shape[0]>0:
+            ## create distance matrix for each two points
+            pnt_num = tz_pois.shape[0]
+            dismat = np.zeros(shape=(pnt_num,pnt_num),dtype=int)
+            for i in range(pnt_num):
+                for j in range(pnt_num):
+                    dismat[i,j] = int(tz_pois.loc[i,"geometry"].distance(tz_pois.loc[j,"geometry"]))
+
+            ## get the pair with largest distance
+            visited = list(np.unravel_index(np.argmax(dismat, axis=None), dismat.shape))
+            
+            ## list of to be visited points
+            not_visited = [x for x in range(pnt_num) if x not in visited]
+
+            np.random.shuffle(not_visited)
+
+            while not_visited:
+                to_be_visit = not_visited.pop()
+                if len(visited)==2:
+                    visited.insert(1,to_be_visit)
+                    pass
+                else:
+                    ## find the index to insert
+                    search_bound = list(zip(visited[0:-1],visited[1:]))
+                    dis = [dismat[to_be_visit,x]+dismat[to_be_visit,y] for x,y in search_bound]
+                    insert_place = dis.index(min(dis))+1
+
+                    visited.insert(insert_place,to_be_visit)
+            sequences[tz_ind] = tz_pois.loc[visited,"code"].values
+            # yield sequences
+    return sequences
+
+def read_csv_to_gdf(path, col="geometry", crs="epsg:4326"):
+    """
+    args:
+        path: path to csv file 
+        col: geopandas geometry column
+        crs: projection
+    return:
+        gdf: geodataframe
+    """
+    df = pd.read_csv(path)
+    df['geometry'] = df['geometry'].apply(wkt.loads)
+    gdf = gpd.GeoDataFrame(df, geometry="geometry",crs=crs)
+    return gdf
 
 if __name__ == '__main__':
     main()
