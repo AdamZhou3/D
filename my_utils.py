@@ -14,8 +14,142 @@ from urllib.parse import urlparse
 from requests import get
 ## Constanst =============================================
 VERSION = "v3.0"  # output version
+VEC_DIM = 20 # Vector Dimension Size
 
-VEC_DIM = 20 # Vector Dimension
+## Functions ============================================
+def cache_data(src:str, dest:str, fn =None )->str:
+    '''
+    args:
+        src: source url
+        dest: destination directory
+    return:
+        dfn: destination directory + filename
+    '''
+    url = urlparse(src) # We assume that this is some kind of valid URL
+    if fn is None:
+        fn = os.path.split(url.path)[-1] # Extract the filename
+    dfn = os.path.join(dest,fn) # Destination filename
+    
+    if not os.path.isfile(dfn):
+        
+        print(f"{dfn} not found, downloading!")
+        path = os.path.split(dest)
+        
+        if len(path) >= 1 and path[0] != '':
+            os.makedirs(os.path.join(*path), exist_ok=True)
+            
+        with open(dfn, "wb") as file:
+            response = get(src)
+            file.write(response.content)
+            
+        print(f"\tDone downloading.")
+
+    else:
+        print(f"Found {dfn} locally!")
+        
+    return dfn
+
+def unzip_file(mzip, mdir):
+    """
+    Extract files from zip without keeping the structure
+    args:
+        mzip: dir + filename
+        mdir: destiny dir
+    """
+    path = os.path.split(mdir)
+
+    if len(path) >= 1 and path[0] != '':
+        os.makedirs(os.path.join(*path), exist_ok=True)
+    
+    with zipfile.ZipFile(mzip) as zipf:
+        for zip_info in zipf.infolist():
+            if zip_info.filename[-1] == '/':
+                continue
+            zip_info.filename = os.path.basename(zip_info.filename)
+            zipf.extract(zip_info, mdir)
+    print(f"unziped {mzip}")
+    
+def date_features(df, date="date"):
+    """
+    Extracte date features based on the timestamp column in the data frame
+    """
+    df[date] = pd.to_datetime(df[date])
+#     df[date+"_month"] = df[date].dt.month.astype(int)
+#     df[date+"_year"]  = df[date].dt.year.astype(int)
+#     df[date+"_week"]  = df[date].dt.week.astype(int)
+    df[date+"_day"]   = df[date].dt.day.astype(int)
+#     df[date+"_dayofweek"]= df[date].dt.dayofweek.astype(int)
+#     df[date+"_dayofyear"]= df[date].dt.dayofyear.astype(int)
+    df[date+"_hour"] = df[date].dt.hour.astype(int)
+#     df[date+"_int"] = pd.to_datetime(df[date]).astype(int)
+    df[date+"_weekend"] = np.where(df[date].dt.dayofweek < 5,0,1)
+    return df
+
+def get_sequences_by_distancegreedy(gdf_tz, gdf_poi):
+    sequences={}
+    df_join = sjoin(gdf_poi, gdf_tz, how="inner",op="within")
+    
+    for tz_ind in tqdm.tqdm(df_join.index_right.unique()):
+        tz_pois = df_join[df_join.index_right==tz_ind].reset_index()
+
+        if tz_pois.shape[0]>0:
+            ## create distance matrix for each two points
+            pnt_num = tz_pois.shape[0]
+            dismat = np.zeros(shape=(pnt_num,pnt_num),dtype=int)
+            for i in range(pnt_num):
+                for j in range(pnt_num):
+                    dismat[i,j] = int(tz_pois.loc[i,"geometry"].distance(tz_pois.loc[j,"geometry"]))
+
+            ## get the pair with largest distance
+            visited = list(np.unravel_index(np.argmax(dismat, axis=None), dismat.shape))
+            
+            ## list of to be visited points
+            not_visited = [x for x in range(pnt_num) if x not in visited]
+
+            np.random.shuffle(not_visited)
+
+            while not_visited:
+                to_be_visit = not_visited.pop()
+                if len(visited)==2:
+                    visited.insert(1,to_be_visit)
+                    pass
+                else:
+                    ## find the index to insert
+                    search_bound = list(zip(visited[0:-1],visited[1:]))
+                    dis = [dismat[to_be_visit,x]+dismat[to_be_visit,y] for x,y in search_bound]
+                    insert_place = dis.index(min(dis))+1
+
+                    visited.insert(insert_place,to_be_visit)
+            sequences[tz_ind] = tz_pois.loc[visited,"code"].values
+            # yield sequences
+    return sequences
+
+def read_csv_to_gdf(path, col="geometry", crs="epsg:4326"):
+    """
+    args:
+        path: path to csv file 
+        col: geopandas geometry column
+        crs: projection
+    return:
+        gdf: geodataframe
+    """
+    df = pd.read_csv(path)
+    df['geometry'] = df['geometry'].apply(wkt.loads)
+    gdf = gpd.GeoDataFrame(df, geometry="geometry",crs=crs)
+    return gdf
+
+def Cosine_KMeans(nclust = 4):
+    from sklearn.cluster import k_means_ # 0.24
+    # Manually override euclidean
+    def euc_dist(X, Y = None, Y_norm_squared = None, squared = False):
+        #return pairwise_distances(X, Y, metric = 'cosine', n_jobs = 10)
+        return cosine_similarity(X, Y)
+    k_means_.euclidean_distances = euc_dist
+
+    kmeans = k_means_.KMeans(n_clusters = nclust, random_state = 3425)
+    return kmeans
+
+## Map dics =============================
 
 POICODE = {
 "0101":"Residential|Gated Development",
@@ -280,138 +414,5 @@ ZONINGCODE = {
 'R9': 'RH',
 'R9A': 'RH',
 'R9X': 'RH'}
-## Functions ============================================
-def cache_data(src:str, dest:str, fn =None )->str:
-    '''
-    args:
-        src: source url
-        dest: destination directory
-    return:
-        dfn: destination directory + filename
-    '''
-    url = urlparse(src) # We assume that this is some kind of valid URL
-    if fn is None:
-        fn = os.path.split(url.path)[-1] # Extract the filename
-    dfn = os.path.join(dest,fn) # Destination filename
-    
-    if not os.path.isfile(dfn):
-        
-        print(f"{dfn} not found, downloading!")
-        path = os.path.split(dest)
-        
-        if len(path) >= 1 and path[0] != '':
-            os.makedirs(os.path.join(*path), exist_ok=True)
-            
-        with open(dfn, "wb") as file:
-            response = get(src)
-            file.write(response.content)
-            
-        print(f"\tDone downloading.")
-
-    else:
-        print(f"Found {dfn} locally!")
-        
-    return dfn
-
-def unzip_file(mzip, mdir):
-    """
-    Extract files from zip without keeping the structure
-    args:
-        mzip: dir + filename
-        mdir: destiny dir
-    """
-    path = os.path.split(mdir)
-
-    if len(path) >= 1 and path[0] != '':
-        os.makedirs(os.path.join(*path), exist_ok=True)
-    
-    with zipfile.ZipFile(mzip) as zipf:
-        for zip_info in zipf.infolist():
-            if zip_info.filename[-1] == '/':
-                continue
-            zip_info.filename = os.path.basename(zip_info.filename)
-            zipf.extract(zip_info, mdir)
-    print(f"unziped {mzip}")
-    
-def date_features(df, date="date"):
-    """
-    Extracte date features based on the timestamp column in the data frame
-    """
-    df[date] = pd.to_datetime(df[date])
-#     df[date+"_month"] = df[date].dt.month.astype(int)
-#     df[date+"_year"]  = df[date].dt.year.astype(int)
-#     df[date+"_week"]  = df[date].dt.week.astype(int)
-    df[date+"_day"]   = df[date].dt.day.astype(int)
-#     df[date+"_dayofweek"]= df[date].dt.dayofweek.astype(int)
-#     df[date+"_dayofyear"]= df[date].dt.dayofyear.astype(int)
-    df[date+"_hour"] = df[date].dt.hour.astype(int)
-#     df[date+"_int"] = pd.to_datetime(df[date]).astype(int)
-    df[date+"_weekend"] = np.where(df[date].dt.dayofweek < 5,0,1)
-    return df
-
-def get_sequences_by_distancegreedy(gdf_tz, gdf_poi):
-    sequences={}
-    df_join = sjoin(gdf_poi, gdf_tz, how="inner",op="within")
-    
-    for tz_ind in tqdm.tqdm(df_join.index_right.unique()):
-        tz_pois = df_join[df_join.index_right==tz_ind].reset_index()
-
-        if tz_pois.shape[0]>0:
-            ## create distance matrix for each two points
-            pnt_num = tz_pois.shape[0]
-            dismat = np.zeros(shape=(pnt_num,pnt_num),dtype=int)
-            for i in range(pnt_num):
-                for j in range(pnt_num):
-                    dismat[i,j] = int(tz_pois.loc[i,"geometry"].distance(tz_pois.loc[j,"geometry"]))
-
-            ## get the pair with largest distance
-            visited = list(np.unravel_index(np.argmax(dismat, axis=None), dismat.shape))
-            
-            ## list of to be visited points
-            not_visited = [x for x in range(pnt_num) if x not in visited]
-
-            np.random.shuffle(not_visited)
-
-            while not_visited:
-                to_be_visit = not_visited.pop()
-                if len(visited)==2:
-                    visited.insert(1,to_be_visit)
-                    pass
-                else:
-                    ## find the index to insert
-                    search_bound = list(zip(visited[0:-1],visited[1:]))
-                    dis = [dismat[to_be_visit,x]+dismat[to_be_visit,y] for x,y in search_bound]
-                    insert_place = dis.index(min(dis))+1
-
-                    visited.insert(insert_place,to_be_visit)
-            sequences[tz_ind] = tz_pois.loc[visited,"code"].values
-            # yield sequences
-    return sequences
-
-def read_csv_to_gdf(path, col="geometry", crs="epsg:4326"):
-    """
-    args:
-        path: path to csv file 
-        col: geopandas geometry column
-        crs: projection
-    return:
-        gdf: geodataframe
-    """
-    df = pd.read_csv(path)
-    df['geometry'] = df['geometry'].apply(wkt.loads)
-    gdf = gpd.GeoDataFrame(df, geometry="geometry",crs=crs)
-    return gdf
-
-def Cosine_KMeans(nclust = 4):
-    from sklearn.cluster import k_means_ # 0.24
-    # Manually override euclidean
-    def euc_dist(X, Y = None, Y_norm_squared = None, squared = False):
-        #return pairwise_distances(X, Y, metric = 'cosine', n_jobs = 10)
-        return cosine_similarity(X, Y)
-    k_means_.euclidean_distances = euc_dist
-
-    kmeans = k_means_.KMeans(n_clusters = nclust, random_state = 3425)
-    return kmeans
-
 if __name__ == '__main__':
     main()
