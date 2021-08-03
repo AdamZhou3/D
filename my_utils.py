@@ -347,9 +347,11 @@ def date_features(df, date="date"):
 
 def get_sequences_by_distancegreedy(gdf_tz, gdf_poi):
     sequences={}
-    for tz_ind in tqdm.tqdm(range(len(gdf_tz))):
-        tz = gdf_tz.iloc[tz_ind,:].geometry
-        tz_pois = gdf_poi[gdf_poi.within(tz)].reset_index()
+    gdf_tz["geometry"] =  gdf_tz.apply(lambda x:Polygon(x["geometry"].buffer(100).exterior), axis=1)
+    df_join = sjoin(gdf_poi, gdf_tz, how="inner",op="within")
+    
+    for tz_ind in tqdm.tqdm(df_join.index_right.unique()):
+        tz_pois = df_join[df_join.index_right==tz_ind].reset_index()
 
         if tz_pois.shape[0]>0:
             ## create distance matrix for each two points
