@@ -8,10 +8,14 @@ import numpy as np
 from shapely import wkt
 import geopandas as gpd
 
+import sklearn
+
 from urllib.parse import urlparse
 from requests import get
 ## Constanst =============================================
 VERSION = "v3.0"  # output version
+
+VEC_DIM = 20 # Vector Dimension
 
 POICODE = {
 "0101":"Residential|Gated Development",
@@ -347,7 +351,6 @@ def date_features(df, date="date"):
 
 def get_sequences_by_distancegreedy(gdf_tz, gdf_poi):
     sequences={}
-    gdf_tz["geometry"] =  gdf_tz.apply(lambda x:Polygon(x["geometry"].buffer(100).exterior), axis=1)
     df_join = sjoin(gdf_poi, gdf_tz, how="inner",op="within")
     
     for tz_ind in tqdm.tqdm(df_join.index_right.unique()):
@@ -398,6 +401,17 @@ def read_csv_to_gdf(path, col="geometry", crs="epsg:4326"):
     df['geometry'] = df['geometry'].apply(wkt.loads)
     gdf = gpd.GeoDataFrame(df, geometry="geometry",crs=crs)
     return gdf
+
+def Cosine_KMeans(nclust = 4):
+    from sklearn.cluster import k_means_ # 0.24
+    # Manually override euclidean
+    def euc_dist(X, Y = None, Y_norm_squared = None, squared = False):
+        #return pairwise_distances(X, Y, metric = 'cosine', n_jobs = 10)
+        return cosine_similarity(X, Y)
+    k_means_.euclidean_distances = euc_dist
+
+    kmeans = k_means_.KMeans(n_clusters = nclust, random_state = 3425)
+    return kmeans
 
 if __name__ == '__main__':
     main()
