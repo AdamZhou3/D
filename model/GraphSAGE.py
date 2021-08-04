@@ -25,7 +25,7 @@ class SageLayer(nn.Module):
 
     def init_params(self):
         for param in self.parameters():
-            nn.init.xavier_uniform_(param)
+            nn.init.normal_(param)
 
     def forward(self, self_feats, aggregate_feats, neighs=None):
         """
